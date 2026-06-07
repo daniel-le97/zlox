@@ -1,0 +1,14 @@
+// Scope smoke test for zox
+var a = 1;
+{
+  var a = 2;
+  print a; // 2
+}
+print a; // 1
+
+var b = 10;
+{
+  b = 20;
+  print b; // 20
+}
+print b; // 20

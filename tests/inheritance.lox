@@ -1,0 +1,55 @@
+// Inheritance smoke test for zox
+class A {
+  init(v) {
+    this.v = v;
+  }
+
+  value() {
+    return this.v;
+  }
+
+  label() {
+    return "A";
+  }
+}
+
+class B < A {
+  init(v) {
+    super.init(v + 1);
+  }
+
+  label() {
+    return super.label() + "B";
+  }
+}
+
+var b = B(2);
+print b.value();  // 3
+print b.label();  // AB// Inheritance and super smoke test for zox
+class A {
+  init(v) {
+    this.v = v;
+  }
+
+  value() {
+    return this.v;
+  }
+
+  label() {
+    return "A";
+  }
+}
+
+class B < A {
+  init(v) {
+    super.init(v + 1);
+  }
+
+  label() {
+    return super.label() + "B";
+  }
+}
+
+var b = B(2);
+print b.value();  // 3
+print b.label();  // AB

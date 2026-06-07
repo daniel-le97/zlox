@@ -1,0 +1,5 @@
+// Logical operator smoke test for zox
+print true or false;      // true
+print false and true;     // false
+print false or 123;       // 123
+print true and 456;       // 456

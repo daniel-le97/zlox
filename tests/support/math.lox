@@ -1,0 +1,7 @@
+module math;
+
+fun square(value) {
+  return value * value;
+}
+
+var answer = 42;

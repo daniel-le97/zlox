@@ -1,0 +1,4 @@
+import "support/math.lox";
+
+print math.square(3);
+print math.answer;

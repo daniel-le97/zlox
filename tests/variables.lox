@@ -1,0 +1,9 @@
+// Variable smoke test for zox
+var a = 1;
+var b;
+print a;   // 1
+print b;   // nil
+b = a + 2;
+print b;   // 3
+a = b * 4;
+print a;   // 12

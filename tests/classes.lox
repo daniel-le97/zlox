@@ -1,0 +1,16 @@
+// Class smoke test for zox
+class Foo {
+  init(v) {
+    this.v = v;
+  }
+
+  getV() {
+    return this.v;
+  }
+}
+
+var foo = Foo(3);
+print foo.getV(); // 3
+
+foo.v = 5;
+print foo.getV(); // 5

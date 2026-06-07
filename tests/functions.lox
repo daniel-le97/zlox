@@ -1,0 +1,17 @@
+// Function smoke test for zox
+fun add(a, b) {
+  return a + b;
+}
+
+print add(1, 2); // 3
+
+fun makeAdder(a) {
+  fun add(b) {
+    return a + b;
+  }
+
+  return add;
+}
+
+var addTwo = makeAdder(2);
+print addTwo(3); // 5

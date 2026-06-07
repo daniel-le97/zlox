@@ -1,0 +1,4 @@
+import "std/strings.lox";
+
+print strings.shout("hello");
+print strings.repeat("ha", 3);

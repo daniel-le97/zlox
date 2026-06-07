@@ -1,0 +1,11 @@
+// Comparison and equality smoke test for zox
+print 1 < 2;      // true
+print 2 <= 2;     // true
+print 3 > 4;      // false
+print 4 >= 4;     // true
+print 1 == 1;     // true
+print 1 != 2;     // true
+print nil == nil; // true
+print true == false; // false
+print "a" == "a"; // true
+print "a" != "b"; // true
