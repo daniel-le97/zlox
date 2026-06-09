@@ -5,7 +5,6 @@ pub const vm = @import("vm.zig");
 pub const lexer = @import("lexer.zig");
 pub const compiler = @import("compiler.zig");
 pub const validator = @import("validator.zig");
-pub const interpreter = @import("interpreter.zig");
 
 pub const Chunk = chunk.Chunk;
 pub const OpCode = chunk.OpCode;
@@ -14,6 +13,5 @@ pub const VM = vm.VM;
 pub const Lexer = lexer.Lexer;
 pub const Compiler = compiler.Compiler;
 pub const Validator = validator.Runner;
-pub const Interpreter = interpreter.Interpreter;
 pub const Token = lexer.Token;
 pub const TokenType = lexer.TokenType;
