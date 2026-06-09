@@ -1,0 +1,13 @@
+module strings;
+
+fun shout(s) {
+  return s + "!";
+}
+
+fun repeat(s, n) {
+  var result = "";
+  for (var i = 0; i < n; i = i + 1) {
+    result = result + s;
+  }
+  return result;
+}

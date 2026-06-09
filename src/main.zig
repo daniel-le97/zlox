@@ -73,8 +73,13 @@ fn preloadImports(vm: *zlox.VM, io: std.Io, source: []const u8, parent_path: []c
                 var resolved_buf: [1024]u8 = undefined;
                 const resolved_path = try resolveImportPath(parent_path, import_path, &resolved_buf);
 
+                // Try importing relative to parent first, then fall back to CWD
                 var import_buffer: [1024 * 1024]u8 = undefined;
-                const import_source = std.Io.Dir.readFile(std.Io.Dir.cwd(), io, resolved_path, &import_buffer) catch continue;
+                const import_source = std.Io.Dir.readFile(std.Io.Dir.cwd(), io, resolved_path, &import_buffer) catch blk: {
+                    // Fallback: try resolving relative to CWD
+                    const cwd_resolved = try resolveImportPath(".", import_path, &resolved_buf);
+                    break :blk std.Io.Dir.readFile(std.Io.Dir.cwd(), io, cwd_resolved, &import_buffer) catch continue;
+                };
 
                 try preloadImports(vm, io, import_source, resolved_path);
 
@@ -118,11 +123,11 @@ fn resolveImportPath(parent_path: []const u8, import_path: []const u8, buf: []u8
     if (import_path.len > 0 and (import_path[0] == '/' or import_path[0] == '\\')) {
         return import_path;
     }
-    // Get parent directory
-    var parent_dir_end: usize = parent_path.len;
+    // Get parent directory (everything up to the last separator)
+    var parent_dir_end: usize = 0;
     if (std.mem.lastIndexOfScalar(u8, parent_path, '/')) |idx| parent_dir_end = idx;
     if (std.mem.lastIndexOfScalar(u8, parent_path, '\\')) |idx| parent_dir_end = @max(parent_dir_end, idx);
-    const parent_dir = parent_path[0..parent_dir_end];
+    const parent_dir = if (parent_dir_end > 0) parent_path[0..parent_dir_end] else ".";
     // Combine: parent_dir/import_path
     const resolved = try std.fmt.bufPrint(buf, "{s}/{s}", .{ parent_dir, import_path });
     return resolved;

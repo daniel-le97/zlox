@@ -155,7 +155,7 @@ pub fn build(b: *std.Build) void {
         "tests/inheritance.lox",
         "tests/logical.lox",
         "tests/imports.lox",
-        "tests/strings.lox",
+        "tests/stdlib.lox",
     };
 
     for (fixtures) |fixture| {
