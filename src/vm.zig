@@ -22,6 +22,7 @@ const CallFrame = struct {
     closure: *ObjClosure,
     ip: usize,
     stack_offset: usize,
+    is_initializer: bool = false,
 };
 
 pub const VM = struct {
@@ -76,7 +77,7 @@ pub const VM = struct {
         var frame = &self.frames[self.frame_count - 1];
 
         while (true) {
-            // Uncomment for bytecode tracing
+            // Bytecode tracing
             // try self.traceBytecode(frame);
 
             const instruction: OpCode = @enumFromInt(self.readByte(frame));
@@ -212,41 +213,65 @@ pub const VM = struct {
                     try self.push(.{ .obj = &class_obj.obj });
                 },
                 .get_property => {
-                    const instance = self.peek(0);
-                    if (instance != .obj or instance.obj.obj_type != .instance) return error.OnlyInstancesHaveProperties;
-                    const inst: *ObjInstance = @ptrCast(instance.obj);
+                    const target = self.peek(0);
+                    if (target != .obj) return error.OnlyInstancesHaveProperties;
                     const name = self.readConstant(frame);
                     if (name != .string) return error.OperandsMustBeStrings;
 
-                    if (inst.fields.get(name.string)) |value| {
-                        _ = self.pop();
-                        try self.push(value);
+                    if (target.obj.obj_type == .instance) {
+                        const inst: *ObjInstance = @ptrCast(target.obj);
+                        if (inst.fields.get(name.string)) |value| {
+                            _ = self.pop();
+                            try self.push(value);
+                        } else if (inst.class_def.findMethod(name.string)) |method| {
+                            const bound = try self.allocObject(ObjBoundMethod);
+                            bound.obj = .{ .obj_type = .bound_method, .next = null };
+                            bound.receiver = target;
+                            bound.method = @ptrCast(method.obj);
+                            _ = self.pop();
+                            try self.push(.{ .obj = &bound.obj });
+                        } else {
+                            return error.UndefinedProperty;
+                        }
+                    } else if (target.obj.obj_type == .module) {
+                        const mod: *ObjModule = @ptrCast(target.obj);
+                        if (mod.exports.get(name.string)) |value| {
+                            _ = self.pop();
+                            try self.push(value);
+                        } else {
+                            return error.UndefinedProperty;
+                        }
                     } else {
-                        // Look up method
-                        const method = inst.class_def.methods.get(name.string);
-                        if (method == null) return error.UndefinedProperty;
-                        _ = self.pop();
-                        try self.push(method.?);
+                        return error.OnlyInstancesHaveProperties;
                     }
                 },
                 .set_property => {
-                    const instance = self.peek(1);
-                    if (instance != .obj or instance.obj.obj_type != .instance) return error.OnlyInstancesHaveProperties;
-                    const inst: *ObjInstance = @ptrCast(instance.obj);
+                    if (self.peek(1) != .obj or self.peek(1).obj.obj_type != .instance) {
+                        return error.OnlyInstancesHaveProperties;
+                    }
+                    const inst: *ObjInstance = @ptrCast(self.peek(1).obj);
                     const name = self.readConstant(frame);
                     if (name != .string) return error.OperandsMustBeStrings;
 
-                    const value = self.peek(0);
+                    const value = self.pop();
                     try inst.fields.put(name.string, value);
-                    _ = self.pop();
+                    _ = self.pop(); // pop instance
+                    try self.push(value); // push value as expression result
                 },
                 .method => {
                     const name = self.readConstant(frame);
                     if (name != .string) return error.OperandsMustBeStrings;
-                    const method = self.peek(0);
+                    const method_value = self.peek(0);
+                    if (method_value != .obj) return error.RuntimeError;
+
+                    // Wrap function in closure
+                    const closure = try ObjClosure.init(self.allocator, @ptrCast(method_value.obj));
+                    _ = self.pop(); // pop old function value
+                    try self.push(.{ .obj = &closure.obj });
+
                     const class_def: *ObjClass = @ptrCast(self.stack[self.stack_top - 2].obj);
-                    try class_def.methods.put(name.string, method);
-                    _ = self.pop();
+                    try class_def.methods.put(name.string, .{ .obj = &closure.obj });
+                    _ = self.pop(); // pop closure
                 },
                 .invoke => {
                     const name = self.readConstant(frame);
@@ -270,54 +295,62 @@ pub const VM = struct {
                     frame = &self.frames[self.frame_count - 1];
                 },
                 .inherit => {
-                    const superclass = self.peek(1);
-                    if (superclass != .obj or superclass.obj.obj_type != .class) return error.SuperclassMustBeClass;
-                    const subclass = self.peek(0);
+                    const subclass = self.peek(1);
                     if (subclass != .obj or subclass.obj.obj_type != .class) return error.RuntimeError;
+                    const superclass = self.peek(0);
+                    if (superclass != .obj or superclass.obj.obj_type != .class) return error.SuperclassMustBeClass;
                     const sub: *ObjClass = @ptrCast(subclass.obj);
                     sub.superclass = @ptrCast(superclass.obj);
-                    _ = self.pop();
+                    _ = self.pop(); // pop superclass, keep subclass for METHOD
                 },
                 .get_super => {
                     const name = self.readConstant(frame);
                     if (name != .string) return error.OperandsMustBeStrings;
-                    const superclass = self.pop();
-                    if (superclass != .obj or superclass.obj.obj_type != .class) return error.RuntimeError;
-                    const sc: *ObjClass = @ptrCast(superclass.obj);
-
-                    if (!self.bindMethod(sc, name.string)) {
-                        return .runtime_error;
-                    }
+                    // stack has: [..., this]
+                    const instance = self.peek(0);
+                    if (instance != .obj or instance.obj.obj_type != .instance) return error.RuntimeError;
+                    const inst: *ObjInstance = @ptrCast(instance.obj);
+                    const superclass = inst.class_def.superclass orelse return error.RuntimeError;
+                    if (!self.bindMethod(superclass, name.string)) return .runtime_error;
                 },
                 .super_invoke => {
                     const name = self.readConstant(frame);
                     if (name != .string) return error.OperandsMustBeStrings;
                     const arg_count = self.readByte(frame);
-                    const superclass = self.pop();
-                    if (superclass != .obj or superclass.obj.obj_type != .class) return error.RuntimeError;
-                    const sc: *ObjClass = @ptrCast(superclass.obj);
-
-                    if (!self.invokeFromClass(sc, name.string, arg_count)) {
-                        return .runtime_error;
-                    }
+                    // stack has: [..., this, arg1, arg2, ...]
+                    const instance = self.peek(arg_count);
+                    if (instance != .obj or instance.obj.obj_type != .instance) return error.RuntimeError;
+                    const inst: *ObjInstance = @ptrCast(instance.obj);
+                    const superclass = inst.class_def.superclass orelse return error.RuntimeError;
+                    if (!self.invokeFromClass(superclass, name.string, arg_count)) return .runtime_error;
                     frame = &self.frames[self.frame_count - 1];
+                },
+                .import_module => {
+                    // Imports are handled at the main.zig level before execution.
+                    // This opcode is a no-op at runtime — the module is already in globals.
+                    _ = self.readConstant(frame); // path
+                    _ = self.readConstant(frame); // module name
                 },
                 .print => {
                     self.printValue(self.pop());
                 },
                 .@"return" => {
-                    const result = self.pop();
-                    // Close upvalues captured by this frame
+                    const result = if (self.stack_top > frame.stack_offset) self.pop() else Value.nil;
                     self.closeUpvalues(frame.stack_offset);
 
                     self.frame_count -= 1;
                     if (self.frame_count == 0) {
-                        // Top-level script finished — nothing more to pop
                         return .ok;
                     }
 
-                    self.stack_top = frame.stack_offset;
-                    try self.push(result);
+                    // For initializers: keep 'this' (slot 0) instead of the return value
+                    if (frame.is_initializer) {
+                        self.stack_top = frame.stack_offset;
+                        try self.push(self.stack[frame.stack_offset]);
+                    } else {
+                        self.stack_top = frame.stack_offset;
+                        try self.push(result);
+                    }
                     frame = &self.frames[self.frame_count - 1];
                 },
             }
@@ -370,6 +403,11 @@ pub const VM = struct {
     fn callValue(self: *VM, callee: Value, arg_count: u8) bool {
         if (callee == .obj) {
             switch (callee.obj.obj_type) {
+                .function => {
+                    const closure = ObjClosure.init(self.allocator, @ptrCast(callee.obj)) catch return false;
+                    self.stack[self.stack_top - arg_count - 1] = .{ .obj = &closure.obj };
+                    return self.call(closure, arg_count);
+                },
                 .closure => return self.call(@ptrCast(callee.obj), arg_count),
                 .native => {
                     const native_fn: *ObjNative = @ptrCast(callee.obj);
@@ -380,20 +418,23 @@ pub const VM = struct {
                     return true;
                 },
                 .class => {
-                    // Constructor call: create instance
                     const class_def: *ObjClass = @ptrCast(callee.obj);
                     const instance = self.allocObject(ObjInstance) catch return false;
                     instance.* = ObjInstance.init(self.allocator, class_def);
-                    self.stack[self.stack_top - arg_count - 1] = .{ .obj = &instance.obj };
 
-                    // Call init if it exists
+                    const callee_slot = self.stack_top - arg_count - 1;
+                    self.stack[callee_slot] = .{ .obj = &instance.obj };
+
                     if (class_def.methods.get("init")) |init_method| {
-                        return self.callValue(init_method, arg_count);
-                    } else if (arg_count != 0) {
-                        // No init but arguments provided — error
-                        return false;
+                        // Mark the new frame as an initializer so RETURN preserves the instance
+                        if (!self.callValue(init_method, arg_count)) return false;
+                        // The frame was created by call() inside callValue, set the flag
+                        self.frames[self.frame_count - 1].is_initializer = true;
+                        return true;
+                    } else {
+                        if (arg_count != 0) return false;
+                        return true;
                     }
-                    return true;
                 },
                 .bound_method => {
                     const bound: *ObjBoundMethod = @ptrCast(callee.obj);
@@ -419,17 +460,18 @@ pub const VM = struct {
         frame.closure = closure;
         frame.ip = 0;
         frame.stack_offset = self.stack_top - arg_count - 1;
+        frame.is_initializer = false;
 
         return true;
     }
 
     fn invokeFromClass(self: *VM, class_def: *ObjClass, name: []const u8, arg_count: u8) bool {
-        const method = class_def.methods.get(name) orelse return false;
+        const method = class_def.findMethod(name) orelse return false;
         return self.callValue(method, arg_count);
     }
 
     fn bindMethod(self: *VM, class_def: *ObjClass, name: []const u8) bool {
-        const method_value = class_def.methods.get(name) orelse return false;
+        const method_value = class_def.findMethod(name) orelse return false;
         const bound = self.allocObject(ObjBoundMethod) catch return false;
         bound.obj = .{ .obj_type = .bound_method, .next = null };
         bound.receiver = self.peek(0);

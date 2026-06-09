@@ -48,6 +48,14 @@ pub const Compiler = struct {
     // Upvalue tracking
     upvalues: [MAX_UPVALUES]Upvalue = undefined,
 
+    // Loop tracking for break/continue
+    innermost_loop_start: usize = 0,
+    innermost_loop_scope_depth: i32 = -1,
+    is_for_loop: bool = false,
+    for_increment_start: usize = 0,
+    break_jumps: [256]i32 = undefined,
+    break_count: usize = 0,
+
     // Enclosing compiler (for nested functions)
     enclosing: ?*Compiler = null,
 
@@ -97,6 +105,16 @@ pub const Compiler = struct {
     // === Declarations ===
 
     fn declaration(self: *Compiler) void {
+        if (self.match(&[_]TokenType{.import_kw})) {
+            self.importDeclaration();
+            return;
+        }
+
+        if (self.match(&[_]TokenType{.module_kw})) {
+            self.moduleDeclaration();
+            return;
+        }
+
         if (self.match(&[_]TokenType{.class})) {
             self.classDeclaration();
             return;
@@ -113,6 +131,22 @@ pub const Compiler = struct {
         }
 
         self.statement();
+    }
+
+    fn importDeclaration(self: *Compiler) void {
+        const path_token = self.consumeString("Expect string path after import.") catch return;
+        self.consume(.semicolon, "Expect ';' after import.") catch return;
+        // Imports are handled at compile-time by main.zig — no bytecode emitted.
+        _ = path_token;
+    }
+
+    fn moduleDeclaration(self: *Compiler) void {
+        const name_token = self.consumeIdentifier("Expect module name.") catch return;
+        self.consume(.semicolon, "Expect ';' after module declaration.") catch return;
+        // Define the module name as a global with nil placeholder.
+        // main.zig's preloader will replace it with the actual module data.
+        self.emitOpcode(.nil);
+        self.emitBytes(@intFromEnum(OpCode.define_global), self.identifierConstant(name_token));
     }
 
     fn classDeclaration(self: *Compiler) void {
@@ -139,11 +173,15 @@ pub const Compiler = struct {
             const func_type: FunctionType = if (is_init) .initializer else .method;
             self.method(func_type);
 
+            // Push the method function constant and bind it
+            const const_idx = @as(u8, @intCast(self.function.chunk.constants.items.len - 1));
+            self.emitBytes(@intFromEnum(OpCode.constant), const_idx);
             self.emitBytes(@intFromEnum(OpCode.method), method_constant);
         }
 
-        // After all methods: current is the class closing brace
         self.consume(.right_brace, "Expect '}' after class body.") catch return;
+
+        self.defineVariable(name_constant);
     }
 
     fn method(self: *Compiler, func_type: FunctionType) void {
@@ -159,6 +197,11 @@ pub const Compiler = struct {
             self.errorAtCurrent("Out of memory.");
             return;
         };
+
+        // Replace the compiler's function with our manually created one
+        method_compiler.function.deinit();
+        method_compiler.function = func;
+        method_compiler.function.name = "";
 
         // Parse parameters
         if (!method_compiler.check(.right_paren)) {
@@ -195,12 +238,10 @@ pub const Compiler = struct {
     }
 
     fn funDeclaration(self: *Compiler) void {
-        const name = self.consumeIdentifier("Expect function name.") catch return;
-        const name_constant = self.identifierConstant(name);
-
-        self.compileFunction(.function, name.lexeme);
-
-        self.defineVariable(name_constant);
+        const global = self.parseVariable("Expect function name.");
+        self.markInitialized();
+        self.compileFunction(.function, self.previous.lexeme);
+        self.defineVariable(global);
     }
 
     fn compileFunction(self: *Compiler, func_type: FunctionType, name: []const u8) void {
@@ -385,14 +426,12 @@ pub const Compiler = struct {
         }
 
         if (self.match(&[_]TokenType{.break_kw})) {
-            self.errorAtCurrent("'break' not yet supported in VM.");
-            self.consume(.semicolon, "") catch return;
+            self.breakStatement();
             return;
         }
 
         if (self.match(&[_]TokenType{.continue_kw})) {
-            self.errorAtCurrent("'continue' not yet supported in VM.");
-            self.consume(.semicolon, "") catch return;
+            self.continueStatement();
             return;
         }
 
@@ -455,6 +494,9 @@ pub const Compiler = struct {
         const exit_jump = self.emitJump(.jump_if_false);
         self.emitOpcode(.pop);
 
+        self.beginLoop(loop_start);
+        self.is_for_loop = false;
+
         if (self.match(&.{.left_brace})) {
             self.beginScope();
             self.block();
@@ -465,8 +507,12 @@ pub const Compiler = struct {
 
         self.emitLoop(loop_start);
 
+        // Patch breaks after the loop-back instruction
+        self.patchBreaks();
+
         self.patchJump(exit_jump);
         self.emitOpcode(.pop);
+        self.innermost_loop_scope_depth = -1;
     }
 
     fn forStatement(self: *Compiler) void {
@@ -507,6 +553,11 @@ pub const Compiler = struct {
             self.patchJump(body_jump);
         }
 
+        // Set up loop context for break/continue
+        self.beginLoop(loop_start);
+        self.is_for_loop = true;
+        self.for_increment_start = loop_start;
+
         // Body
         if (self.match(&.{.left_brace})) {
             self.block();
@@ -521,7 +572,11 @@ pub const Compiler = struct {
             self.emitOpcode(.pop);
         }
 
+        // Patch breaks after the cleanup pop
+        self.patchBreaks();
+
         _ = self.endScope();
+        self.innermost_loop_scope_depth = -1;
     }
 
     fn returnStatement(self: *Compiler) void {
@@ -540,6 +595,80 @@ pub const Compiler = struct {
             self.consume(.semicolon, "Expect ';' after return value.") catch return;
             self.emitOpcode(.@"return");
         }
+    }
+
+    fn breakStatement(self: *Compiler) void {
+        if (self.innermost_loop_scope_depth == -1) {
+            self.errorAtCurrent("'break' outside of loop.");
+            return;
+        }
+
+        self.consume(.semicolon, "Expect ';' after 'break'.") catch return;
+
+        // Pop any locals declared inside the loop
+        _ = self.endLoopScope();
+
+        // Emit a jump to be patched at loop end
+        const jump = self.emitJump(.jump);
+        if (self.break_count < self.break_jumps.len) {
+            self.break_jumps[self.break_count] = jump;
+            self.break_count += 1;
+        }
+    }
+
+    fn continueStatement(self: *Compiler) void {
+        if (self.innermost_loop_scope_depth == -1) {
+            self.errorAtCurrent("'continue' outside of loop.");
+            return;
+        }
+
+        self.consume(.semicolon, "Expect ';' after 'continue'.") catch return;
+
+        // Pop locals declared up to the loop scope
+        _ = self.endLoopScope();
+
+        if (self.is_for_loop) {
+            // Jump to the increment clause
+            self.emitLoop(self.for_increment_start);
+        } else {
+            // Jump back to the loop condition
+            self.emitLoop(self.innermost_loop_start);
+        }
+    }
+
+    fn patchBreaks(self: *Compiler) void {
+        for (0..self.break_count) |i| {
+            self.patchJump(self.break_jumps[i]);
+        }
+        self.break_count = 0;
+    }
+
+    fn endLoopScope(self: *Compiler) usize {
+        self.scope_depth = self.innermost_loop_scope_depth;
+        var count: usize = 0;
+        while (self.local_count > 1 and self.locals[self.local_count - 1].depth > self.scope_depth) {
+            if (self.locals[self.local_count - 1].is_captured) {
+                self.emitOpcode(.close_upvalue);
+            } else {
+                self.emitOpcode(.pop);
+            }
+            self.local_count -= 1;
+            count += 1;
+        }
+        return count;
+    }
+
+    fn beginLoop(self: *Compiler, loop_start: usize) void {
+        // Save the previous loop context (for nested loops)
+        // For simplicity, we don't support nested break/continue tracking yet
+        self.innermost_loop_start = loop_start;
+        self.innermost_loop_scope_depth = self.scope_depth;
+        self.break_count = 0;
+    }
+
+    fn endLoop(self: *Compiler) void {
+        self.patchBreaks();
+        self.innermost_loop_scope_depth = -1;
     }
 
     fn block(self: *Compiler) void {
@@ -716,8 +845,16 @@ pub const Compiler = struct {
                 const name = self.consumeIdentifier("Expect property name after '.'.") catch return;
                 const name_constant = self.identifierConstant(name);
 
-                if (self.match(&[_]TokenType{.left_paren})) {
+                if (self.match(&[_]TokenType{.equal})) {
+                    // Property assignment: expr.name = value
+                    self.expression();
+                    self.emitBytes(@intFromEnum(OpCode.set_property), name_constant);
+                    return; // assignment is complete, exit call chain
+                } else if (self.match(&[_]TokenType{.left_paren})) {
+                    // Method call: emit invoke (get_property + call)
+                    self.emitBytes(@intFromEnum(OpCode.get_property), name_constant);
                     self.finishCall();
+                    // Don't break — allow chaining like foo.bar().baz()
                 } else {
                     self.emitBytes(@intFromEnum(OpCode.get_property), name_constant);
                 }
@@ -797,11 +934,27 @@ pub const Compiler = struct {
             const super_method = self.consumeIdentifier("Expect superclass method name.") catch return;
             const method_constant = self.identifierConstant(super_method);
 
-            self.namedVariable(.{ .type = .this, .lexeme = "this", .line = self.previous.line, .start = 0, .end = 0 }, false);
+            // Push 'this' as the receiver
+            self.emitBytes(@intFromEnum(OpCode.get_local), 0);
 
             if (self.match(&[_]TokenType{.left_paren})) {
-                self.finishCall();
+                // super.method() — invoke with arguments
+                var arg_count: u8 = 0;
+                if (!self.check(.right_paren)) {
+                    while (true) {
+                        self.expression();
+                        arg_count += 1;
+                        if (arg_count > MAX_PARAMS) {
+                            self.errorAtCurrent("Can't have more than 255 arguments.");
+                        }
+                        if (!self.match(&[_]TokenType{.comma})) break;
+                    }
+                }
+                self.consume(.right_paren, "Expect ')' after arguments.") catch return;
+                self.emitBytes(@intFromEnum(OpCode.super_invoke), method_constant);
+                self.emitByte(arg_count);
             } else {
+                // super.method — get super method as bound method
                 self.emitBytes(@intFromEnum(OpCode.get_super), method_constant);
             }
             return;
@@ -999,6 +1152,22 @@ pub const Compiler = struct {
         };
     }
 
+    fn identifierConstantStr(self: *Compiler, string: []const u8) u8 {
+        return self.currentChunk().addConstant(.{ .string = string }) catch {
+            std.debug.print("Too many constants\n", .{});
+            return 0;
+        };
+    }
+
+    fn consumeString(self: *Compiler, message: []const u8) !Token {
+        if (self.current.type == .string) {
+            self.advance();
+            return self.previous;
+        }
+        self.errorAtCurrent(message);
+        return error.CompileError;
+    }
+
     fn match(self: *Compiler, types: []const TokenType) bool {
         for (types) |t| {
             if (self.check(t)) {
@@ -1068,3 +1237,29 @@ pub const Compiler = struct {
         self.had_error = true;
     }
 };
+
+fn moduleNameFromPath(path: []const u8) []const u8 {
+    // Extract filename without directory and extension
+    var start: usize = 0;
+    var end: usize = path.len;
+
+    // Find last '/' or '\'
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |idx| {
+        start = idx + 1;
+    }
+    if (std.mem.lastIndexOfScalar(u8, path, '\\')) |idx| {
+        start = @max(start, idx + 1);
+    }
+
+    // Find last '.'
+    var dot_idx: ?usize = null;
+    var i: usize = start;
+    while (i < end) : (i += 1) {
+        if (path[i] == '.') dot_idx = i;
+    }
+    if (dot_idx) |idx| {
+        end = idx;
+    }
+
+    return path[start..end];
+}

@@ -56,7 +56,8 @@ pub const OpCode = enum(u8) {
     get_super,
     super_invoke,
 
-    // I/O
+    // I/O and modules
+    import_module,
     print,
 
     // Exit
@@ -165,6 +166,7 @@ pub const Chunk = struct {
             .inherit => self.simpleInstruction("INHERIT", offset),
             .get_super => self.constantInstruction("GET_SUPER", offset),
             .super_invoke => self.invokeInstruction("SUPER_INVOKE", offset),
+            .import_module => self.constantInstruction("IMPORT", offset),
             .print => self.simpleInstruction("PRINT", offset),
             .@"return" => self.simpleInstruction("RETURN", offset),
         };

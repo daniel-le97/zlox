@@ -169,6 +169,12 @@ pub const ObjClass = struct {
         };
     }
 
+    pub fn findMethod(self: *ObjClass, name: []const u8) ?Value {
+        if (self.methods.get(name)) |method| return method;
+        if (self.superclass) |sc| return sc.findMethod(name);
+        return null;
+    }
+
     pub fn deinit(self: *ObjClass) void {
         self.methods.deinit();
     }
