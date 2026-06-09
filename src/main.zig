@@ -29,28 +29,15 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    const source = "1 + 2 * 3";
+    const source = "print 1 + 2 * 3;";
     std.debug.print("Evaluating: {s}\n", .{source});
     try interpret(source);
 }
 
 fn interpret(source: []const u8) !void {
-    var lexer = zlox.Lexer.init(source, std.heap.page_allocator);
-
-    var chunk = zlox.Chunk.init();
-    defer chunk.deinit();
-
-    var compiler = zlox.Compiler.init(&lexer, &chunk);
-    const compiled = try compiler.compile();
-
-    if (!compiled) {
-        std.debug.print("Compilation failed\n", .{});
-        return;
-    }
-
-    var vm = zlox.VM.init(&chunk, std.heap.page_allocator);
+    var vm = zlox.VM.init(std.heap.page_allocator);
     defer vm.deinit();
-    _ = try vm.run();
+    _ = try vm.interpret(source);
 }
 
 fn runFile(io: std.Io, path: [:0]const u8) !void {
@@ -58,9 +45,10 @@ fn runFile(io: std.Io, path: [:0]const u8) !void {
     const source = try std.Io.Dir.readFile(std.Io.Dir.cwd(), io, path, &buffer);
 
     std.debug.print("Running file: {s}\n", .{path});
-    var interpreter = try zlox.Interpreter.init(source, path, io, std.heap.page_allocator);
-    defer interpreter.deinit();
-    try interpreter.run();
+
+    var vm = zlox.VM.init(std.heap.page_allocator);
+    defer vm.deinit();
+    _ = try vm.interpret(source);
 }
 
 fn validateFile(io: std.Io, path: [:0]const u8) !void {

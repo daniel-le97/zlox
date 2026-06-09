@@ -1,17 +1,15 @@
-//! Runtime value types for the Lox interpreter
+//! Runtime value types for the Lox VM
 const std = @import("std");
+const Chunk = @import("chunk.zig").Chunk;
 
 pub const MAX_PARAMS = 16;
+pub const MAX_UPVALUES = 256;
 
 pub const Value = union(enum) {
     number: f64,
     boolean: bool,
     string: []const u8,
-    function_template: *FunctionTemplate,
-    closure: *FunctionInstance,
-    class_def: *ClassDefinition,
-    instance: *Instance,
-    module: *Environment,
+    obj: *Obj,
     nil,
 
     pub fn format(
@@ -26,11 +24,7 @@ pub const Value = union(enum) {
             .number => try writer.print("{d}", .{self.number}),
             .boolean => try writer.print("{}", .{self.boolean}),
             .string => try writer.print("\"{s}\"", .{self.string}),
-            .function_template => try writer.print("<fn {s}>", .{self.function_template.name}),
-            .closure => try writer.print("<closure {s}>", .{self.closure.template.name}),
-            .class_def => try writer.print("<class {s}>", .{self.class_def.name}),
-            .instance => try writer.print("<instance {s}>", .{self.instance.class.name}),
-            .module => try writer.print("<module>", .{}),
+            .obj => |obj| try obj.format(writer),
             .nil => try writer.writeAll("nil"),
         }
     }
@@ -39,8 +33,7 @@ pub const Value = union(enum) {
         return switch (self) {
             .nil => false,
             .boolean => |b| b,
-            .number, .string => true,
-            .function_template, .closure, .class_def, .instance, .module => true,
+            .number, .string, .obj => true,
         };
     }
 
@@ -53,135 +46,182 @@ pub const Value = union(enum) {
             .number => self.number == other.number,
             .boolean => self.boolean == other.boolean,
             .string => std.mem.eql(u8, self.string, other.string),
-            .function_template => self.function_template == other.function_template,
-            .closure => self.closure == other.closure,
-            .class_def => self.class_def == other.class_def,
-            .instance => self.instance == other.instance,
-            .module => self.module == other.module,
+            .obj => self.obj == other.obj,
             .nil => true,
         };
     }
 };
 
-pub const Environment = struct {
-    allocator: std.mem.Allocator,
-    parent: ?*Environment,
-    values: std.StringHashMap(Value),
+pub const ObjType = enum {
+    function,
+    closure,
+    upvalue,
+    class,
+    instance,
+    bound_method,
+    native,
+    module,
+};
 
-    pub fn init(allocator: std.mem.Allocator, parent: ?*Environment) Environment {
-        return .{
-            .allocator = allocator,
-            .parent = parent,
-            .values = std.StringHashMap(Value).init(allocator),
-        };
-    }
+pub const Obj = struct {
+    obj_type: ObjType,
+    next: ?*Obj,
 
-    pub fn deinit(self: *Environment) void {
-        self.values.deinit();
-    }
-
-    pub fn define(self: *Environment, name: []const u8, value: Value) !void {
-        try self.values.put(name, value);
-    }
-
-    pub fn get(self: *Environment, name: []const u8) ?Value {
-        if (self.values.get(name)) |value| {
-            return value;
+    pub fn format(self: *Obj, writer: anytype) !void {
+        switch (self.obj_type) {
+            .function => {
+                const func: *ObjFunction = @fieldParentPtr("obj", self);
+                try writer.print("<fn {s}>", .{func.name});
+            },
+            .closure => {
+                const closure: *ObjClosure = @fieldParentPtr("obj", self);
+                try writer.print("<closure {s}>", .{closure.func.name});
+            },
+            .upvalue => try writer.writeAll("<upvalue>"),
+            .class => {
+                const class_def: *ObjClass = @fieldParentPtr("obj", self);
+                try writer.print("<class {s}>", .{class_def.name});
+            },
+            .instance => {
+                const instance: *ObjInstance = @fieldParentPtr("obj", self);
+                try writer.print("<instance {s}>", .{instance.class_def.name});
+            },
+            .bound_method => {
+                const bound: *ObjBoundMethod = @fieldParentPtr("obj", self);
+                try writer.print("<method {s}>", .{bound.method.func.name});
+            },
+            .native => try writer.writeAll("<native fn>"),
+            .module => try writer.writeAll("<module>"),
         }
-
-        if (self.parent) |parent| {
-            return parent.get(name);
-        }
-
-        return null;
-    }
-
-    pub fn assign(self: *Environment, name: []const u8, value: Value) !void {
-        if (self.values.contains(name)) {
-            try self.values.put(name, value);
-            return;
-        }
-
-        if (self.parent) |parent| {
-            try parent.assign(name, value);
-            return;
-        }
-
-        return error.UndefinedVariable;
     }
 };
 
-pub const FunctionTemplate = struct {
+pub const ObjFunction = struct {
+    obj: Obj,
+    arity: u8,
+    upvalue_count: u8,
+    chunk: Chunk,
     name: []const u8,
-    arity: u8 = 0,
-    param_names: [MAX_PARAMS][]const u8 = undefined,
-    param_count: u8 = 0,
-    body_source: []const u8 = "",
-};
 
-pub const FunctionInstance = struct {
-    template: *FunctionTemplate,
-    closure: *Environment,
-};
-
-pub const ClassDefinition = struct {
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    superclass: ?*ClassDefinition,
-    methods: std.StringHashMap(*FunctionInstance),
-
-    pub fn init(allocator: std.mem.Allocator, name: []const u8, superclass: ?*ClassDefinition) ClassDefinition {
+    pub fn init(allocator: std.mem.Allocator, name: []const u8) ObjFunction {
         return .{
-            .allocator = allocator,
+            .obj = .{ .obj_type = .function, .next = null },
+            .arity = 0,
+            .upvalue_count = 0,
+            .chunk = Chunk.init(allocator),
             .name = name,
-            .superclass = superclass,
-            .methods = std.StringHashMap(*FunctionInstance).init(allocator),
         };
     }
 
-    pub fn deinit(self: *ClassDefinition) void {
+    pub fn deinit(self: *ObjFunction) void {
+        self.chunk.deinit();
+    }
+};
+
+pub const ObjClosure = struct {
+    obj: Obj,
+    func: *ObjFunction,
+    upvalues: []?*ObjUpvalue,
+
+    pub fn init(allocator: std.mem.Allocator, func: *ObjFunction) !*ObjClosure {
+        const closure = try allocator.create(ObjClosure);
+        closure.obj = .{ .obj_type = .closure, .next = null };
+        closure.func = func;
+
+        const upvalues = try allocator.alloc(?*ObjUpvalue, func.upvalue_count);
+        @memset(upvalues, null);
+        closure.upvalues = upvalues;
+
+        return closure;
+    }
+
+    pub fn deinit(self: *ObjClosure, allocator: std.mem.Allocator) void {
+        allocator.free(self.upvalues);
+    }
+};
+
+pub const ObjUpvalue = struct {
+    obj: Obj,
+    location: *Value,
+    closed: Value = .nil,
+    next: ?*ObjUpvalue = null,
+
+    pub fn init(allocator: std.mem.Allocator, slot: *Value) !*ObjUpvalue {
+        const upvalue = try allocator.create(ObjUpvalue);
+        upvalue.obj = .{ .obj_type = .upvalue, .next = null };
+        upvalue.location = slot;
+        return upvalue;
+    }
+};
+
+pub const ObjClass = struct {
+    obj: Obj,
+    name: []const u8,
+    methods: std.StringHashMap(Value),
+    superclass: ?*ObjClass,
+
+    pub fn init(allocator: std.mem.Allocator, name: []const u8, superclass: ?*ObjClass) ObjClass {
+        return .{
+            .obj = .{ .obj_type = .class, .next = null },
+            .name = name,
+            .methods = std.StringHashMap(Value).init(allocator),
+            .superclass = superclass,
+        };
+    }
+
+    pub fn deinit(self: *ObjClass) void {
         self.methods.deinit();
     }
-
-    pub fn defineMethod(self: *ClassDefinition, name: []const u8, method: *FunctionInstance) !void {
-        try self.methods.put(name, method);
-    }
-
-    pub fn findMethod(self: *ClassDefinition, name: []const u8) ?*FunctionInstance {
-        if (self.methods.get(name)) |method| {
-            return method;
-        }
-
-        if (self.superclass) |superclass| {
-            return superclass.findMethod(name);
-        }
-
-        return null;
-    }
 };
 
-pub const Instance = struct {
-    allocator: std.mem.Allocator,
-    class: *ClassDefinition,
+pub const ObjInstance = struct {
+    obj: Obj,
+    class_def: *ObjClass,
     fields: std.StringHashMap(Value),
 
-    pub fn init(allocator: std.mem.Allocator, class: *ClassDefinition) Instance {
+    pub fn init(allocator: std.mem.Allocator, class_def: *ObjClass) ObjInstance {
         return .{
-            .allocator = allocator,
-            .class = class,
+            .obj = .{ .obj_type = .instance, .next = null },
+            .class_def = class_def,
             .fields = std.StringHashMap(Value).init(allocator),
         };
     }
 
-    pub fn deinit(self: *Instance) void {
+    pub fn deinit(self: *ObjInstance) void {
         self.fields.deinit();
     }
+};
 
-    pub fn getField(self: *Instance, name: []const u8) ?Value {
-        return self.fields.get(name);
+pub const ObjBoundMethod = struct {
+    obj: Obj,
+    receiver: Value,
+    method: *ObjClosure,
+};
+
+pub const ObjNative = struct {
+    obj: Obj,
+    function: NativeFn,
+};
+
+pub const NativeFn = *const fn (*VM, []const Value) Value;
+
+pub const ObjModule = struct {
+    obj: Obj,
+    name: []const u8,
+    exports: std.StringHashMap(Value),
+
+    pub fn init(allocator: std.mem.Allocator, name: []const u8) ObjModule {
+        return .{
+            .obj = .{ .obj_type = .module, .next = null },
+            .name = name,
+            .exports = std.StringHashMap(Value).init(allocator),
+        };
     }
 
-    pub fn setField(self: *Instance, name: []const u8, value: Value) !void {
-        try self.fields.put(name, value);
+    pub fn deinit(self: *ObjModule) void {
+        self.exports.deinit();
     }
 };
+
+// Forward declare for native functions
+const VM = @import("vm.zig").VM;

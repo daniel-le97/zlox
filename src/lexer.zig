@@ -72,6 +72,7 @@ pub const Lexer = struct {
     current: usize = 0,
     line: usize = 1,
     allocator: std.mem.Allocator,
+    peeked: ?Token = null,
 
     pub fn init(source: []const u8, allocator: std.mem.Allocator) Lexer {
         return Lexer{
@@ -81,6 +82,21 @@ pub const Lexer = struct {
     }
 
     pub fn nextToken(self: *Lexer) Token {
+        if (self.peeked) |tok| {
+            self.peeked = null;
+            return tok;
+        }
+        return self.nextTokenInternal();
+    }
+
+    pub fn peekToken(self: *Lexer) Token {
+        if (self.peeked == null) {
+            self.peeked = self.nextTokenInternal();
+        }
+        return self.peeked.?;
+    }
+
+    fn nextTokenInternal(self: *Lexer) Token {
         self.skipWhitespace();
         self.start = self.current;
 

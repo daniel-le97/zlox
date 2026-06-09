@@ -8,6 +8,7 @@ pub const validator = @import("validator.zig");
 pub const interpreter = @import("interpreter.zig");
 
 pub const Chunk = chunk.Chunk;
+pub const OpCode = chunk.OpCode;
 pub const Value = value.Value;
 pub const VM = vm.VM;
 pub const Lexer = lexer.Lexer;
