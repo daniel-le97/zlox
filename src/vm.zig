@@ -27,6 +27,7 @@ const CallFrame = struct {
 
 pub const VM = struct {
     allocator: std.mem.Allocator,
+    io: std.Io,
     globals: std.StringHashMap(Value),
     stack: [STACK_MAX]Value = undefined,
     stack_top: usize = 0,
@@ -35,11 +36,21 @@ pub const VM = struct {
     open_upvalues: ?*ObjUpvalue = null,
     objects: ?*Obj = null,
 
-    pub fn init(allocator: std.mem.Allocator) VM {
-        return VM{
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) VM {
+        var vm = VM{
             .allocator = allocator,
+            .io = io,
             .globals = std.StringHashMap(Value).init(allocator),
         };
+        builtin.register(&vm) catch {};
+        return vm;
+    }
+
+    pub fn defineNative(self: *VM, name: []const u8, function: NativeFn) !void {
+        const native = try self.allocObject(ObjNative);
+        native.obj = .{ .obj_type = .native, .next = null };
+        native.function = function;
+        try self.globals.put(name, .{ .obj = &native.obj });
     }
 
     pub fn deinit(self: *VM) void {
@@ -624,3 +635,4 @@ pub const InterpretResult = enum {
 
 const Lexer = @import("lexer.zig").Lexer;
 const Compiler = @import("compiler.zig").Compiler;
+const builtin = @import("builtin.zig");

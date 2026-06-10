@@ -5,6 +5,7 @@ pub const vm = @import("vm.zig");
 pub const lexer = @import("lexer.zig");
 pub const compiler = @import("compiler.zig");
 pub const validator = @import("validator.zig");
+pub const builtin = @import("builtin.zig");
 
 pub const Chunk = chunk.Chunk;
 pub const OpCode = chunk.OpCode;

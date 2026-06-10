@@ -31,11 +31,11 @@ pub fn main(init: std.process.Init) !void {
 
     const source = "print 1 + 2 * 3;";
     std.debug.print("Evaluating: {s}\n", .{source});
-    try interpret(source);
+    try interpret(source, init.io);
 }
 
-fn interpret(source: []const u8) !void {
-    var vm = zlox.VM.init(std.heap.page_allocator);
+fn interpret(source: []const u8, io: std.Io) !void {
+    var vm = zlox.VM.init(std.heap.page_allocator, io);
     defer vm.deinit();
     _ = try vm.interpret(source);
 }
@@ -46,7 +46,7 @@ fn runFile(io: std.Io, path: [:0]const u8) !void {
 
     std.debug.print("Running file: {s}\n", .{path});
 
-    var vm = zlox.VM.init(std.heap.page_allocator);
+    var vm = zlox.VM.init(std.heap.page_allocator, io);
     defer vm.deinit();
 
     // Pre-load imports: scan for "import" statements and load them
@@ -83,7 +83,7 @@ fn preloadImports(vm: *zlox.VM, io: std.Io, source: []const u8, parent_path: []c
 
                 try preloadImports(vm, io, import_source, resolved_path);
 
-                var sub_vm = zlox.VM.init(std.heap.page_allocator);
+                var sub_vm = zlox.VM.init(std.heap.page_allocator, io);
                 defer sub_vm.deinit();
                 if (sub_vm.interpret(import_source)) |_| {} else |_| continue;
 
