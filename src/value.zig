@@ -100,6 +100,7 @@ pub const ObjFunction = struct {
     obj: Obj,
     arity: u8,
     upvalue_count: u8,
+    num_registers: u8,
     chunk: Chunk,
     name: []const u8,
 
@@ -108,6 +109,7 @@ pub const ObjFunction = struct {
             .obj = .{ .obj_type = .function, .next = null },
             .arity = 0,
             .upvalue_count = 0,
+            .num_registers = 1,
             .chunk = Chunk.init(allocator),
             .name = name,
         };
