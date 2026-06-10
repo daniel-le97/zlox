@@ -23,6 +23,9 @@ const CallFrame = struct {
     ip: usize,
     stack_offset: usize,
     is_initializer: bool = false,
+    /// Cached slices to avoid pointer chasing through closure→func→chunk
+    code: []const u8 = &.{},
+    constants: []const Value = &.{},
 };
 
 pub const VM = struct {
@@ -182,6 +185,30 @@ pub const VM = struct {
                         return .runtime_error;
                     }
                     frame = &self.frames[self.frame_count - 1];
+                },
+                .call_self => {
+                    const arg_count = self.readByte(frame);
+                    const callee = frame.closure;
+                    if (arg_count != callee.func.arity) return error.RuntimeError;
+                    if (self.frame_count >= FRAMES_MAX) return .runtime_error;
+                    // Reserve slot 0 by shifting args up 1 and inserting a dummy callee.
+                    // This keeps the stack layout identical to a normal call (callee + args).
+                    const callee_slot = self.stack_top - arg_count;
+                    var i: usize = 0;
+                    while (i < arg_count) : (i += 1) {
+                        self.stack[self.stack_top - i] = self.stack[self.stack_top - i - 1];
+                    }
+                    self.stack[callee_slot] = .nil;
+                    self.stack_top += 1;
+                    const new_frame = &self.frames[self.frame_count];
+                    self.frame_count += 1;
+                    new_frame.closure = callee;
+                    new_frame.ip = 0;
+                    new_frame.stack_offset = callee_slot;
+                    new_frame.is_initializer = false;
+                    new_frame.code = callee.func.chunk.code.items;
+                    new_frame.constants = callee.func.chunk.constants.items;
+                    frame = new_frame;
                 },
                 .closure => {
                     const func = self.readConstant(frame);
@@ -370,21 +397,21 @@ pub const VM = struct {
 
     fn readByte(self: *VM, frame: *CallFrame) u8 {
         _ = self;
-        const byte = frame.closure.func.chunk.readByte(frame.ip);
+        const byte = frame.code[frame.ip];
         frame.ip += 1;
         return byte;
     }
 
     fn readShort(self: *VM, frame: *CallFrame) u16 {
         _ = self;
-        const short = frame.closure.func.chunk.readShort(frame.ip);
+        const short = (@as(u16, frame.code[frame.ip]) << 8) | frame.code[frame.ip + 1];
         frame.ip += 2;
         return short;
     }
 
     fn readConstant(self: *VM, frame: *CallFrame) Value {
         const index = self.readByte(frame);
-        return frame.closure.func.chunk.readConstant(index);
+        return frame.constants[index];
     }
 
     fn binaryOp(self: *VM, op: enum { add, subtract, multiply, divide }) !void {
@@ -472,6 +499,8 @@ pub const VM = struct {
         frame.ip = 0;
         frame.stack_offset = self.stack_top - arg_count - 1;
         frame.is_initializer = false;
+        frame.code = closure.func.chunk.code.items;
+        frame.constants = closure.func.chunk.constants.items;
 
         return true;
     }

@@ -41,6 +41,7 @@ pub const OpCode = enum(u8) {
 
     // Functions
     call,
+    call_self,
     closure,
     get_upvalue,
     set_upvalue,
@@ -154,6 +155,7 @@ pub const Chunk = struct {
             .jump => self.jumpInstruction("JUMP", 1, offset),
             .loop => self.jumpInstruction("LOOP", -1, offset),
             .call => self.byteInstruction("CALL", offset),
+            .call_self => self.byteInstruction("CALL_SELF", offset),
             .closure => self.twoByteInstruction("CLOSURE", offset),
             .get_upvalue => self.byteInstruction("GET_UPVALUE", offset),
             .set_upvalue => self.byteInstruction("SET_UPVALUE", offset),

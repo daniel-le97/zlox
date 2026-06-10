@@ -836,6 +836,31 @@ pub const Compiler = struct {
     }
 
     fn call(self: *Compiler) void {
+        // Self-recursive call optimization: detect fnName(...) and emit call_self
+        if (self.check(.identifier) and
+            self.function.name.len > 0 and
+            std.mem.eql(u8, self.current.lexeme, self.function.name) and
+            self.lexer.peekToken().type == .left_paren)
+        {
+            self.advance(); // consume the function name
+            _ = self.match(&[_]TokenType{.left_paren}); // consume '('
+
+            var arg_count: u8 = 0;
+            if (!self.check(.right_paren)) {
+                while (true) {
+                    self.expression();
+                    arg_count += 1;
+                    if (arg_count > MAX_PARAMS) {
+                        self.errorAtCurrent("Can't have more than 255 arguments.");
+                    }
+                    if (!self.match(&[_]TokenType{.comma})) break;
+                }
+            }
+            self.consume(.right_paren, "Expect ')' after arguments.") catch return;
+            self.emitBytes(@intFromEnum(OpCode.call_self), arg_count);
+            return;
+        }
+
         self.primary();
 
         while (true) {

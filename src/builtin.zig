@@ -11,5 +11,8 @@ pub fn register(vm: *VM) !void {
 fn clockNative(vm: *VM, args: []const Value) Value {
     _ = args;
     const ts = std.Io.Clock.Timestamp.now(vm.io, .real);
-    return .{ .number = @floatFromInt(ts.raw.toSeconds()) };
+    const secs = @as(f64, @floatFromInt(ts.raw.toSeconds()));
+    const ns = @as(f64, @floatFromInt(ts.raw.toNanoseconds()));
+    const subsec = @mod(ns, 1_000_000_000.0);
+    return .{ .number = secs + subsec / 1_000_000_000.0 };
 }
