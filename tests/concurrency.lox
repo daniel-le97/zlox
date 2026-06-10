@@ -1,0 +1,54 @@
+// Concurrency test — actor message loop + fault tolerance
+
+// ── 1. Spawn + await ──
+fun countTo(n) {
+  var i = 0;
+  while (i < n) {
+    print i;
+    i = i + 1;
+  }
+}
+
+var pid_a = spawn(countTo, 3);
+await(pid_a);
+print 100;
+
+// ── 2. Actor with while loop + blocking receive ──
+fun echoActor() {
+  while (true) {
+    var msg = receive();
+    if (msg == -1) {
+      return 999;
+    }
+    print msg;
+  }
+}
+
+var pid_e = spawn(echoActor);
+send(pid_e, 10);
+send(pid_e, 20);
+send(pid_e, -1);
+var r = await(pid_e);
+print r;
+
+// ── 3. Simple send/receive without loop ──
+fun recvOne() {
+  var m = receive();
+  print m;
+}
+
+var pid_r = spawn(recvOne);
+send(pid_r, 42);
+await(pid_r);
+
+// ── 4. Abort ──
+fun looper() {
+  while (true) {
+    yield();
+  }
+}
+
+var pid_g = spawn(looper);
+abort(pid_g);
+print 300;
+

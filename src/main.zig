@@ -38,6 +38,7 @@ fn interpret(source: []const u8, io: std.Io) !void {
     var vm = zlox.VM.init(std.heap.page_allocator, io);
     defer vm.deinit();
     _ = try vm.interpret(source);
+    vm.runScheduler();
 }
 
 fn runFile(io: std.Io, path: [:0]const u8) !void {
@@ -53,6 +54,9 @@ fn runFile(io: std.Io, path: [:0]const u8) !void {
     try preloadImports(&vm, io, source, path);
 
     _ = try vm.interpret(source);
+
+    // Run scheduler for any spawned processes
+    vm.runScheduler();
 }
 
 fn preloadImports(vm: *zlox.VM, io: std.Io, source: []const u8, parent_path: []const u8) !void {

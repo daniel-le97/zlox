@@ -61,6 +61,7 @@ pub const ObjType = enum {
     bound_method,
     native,
     module,
+    process,
 };
 
 pub const Obj = struct {
@@ -92,6 +93,10 @@ pub const Obj = struct {
             },
             .native => try writer.writeAll("<native fn>"),
             .module => try writer.writeAll("<module>"),
+            .process => {
+                const proc: *ObjProcess = @fieldParentPtr("obj", self);
+                try writer.print("<process {d}>", .{proc.id});
+            },
         }
     }
 };
@@ -228,6 +233,73 @@ pub const ObjModule = struct {
 
     pub fn deinit(self: *ObjModule) void {
         self.exports.deinit();
+    }
+};
+
+pub const ProcessStatus = enum(u8) {
+    ready,
+    running,
+    blocked_receive,
+    blocked_await,
+    crashed,
+    done,
+};
+
+pub const RestartPolicy = enum { permanent, temporary, transient };
+
+pub const ObjProcess = struct {
+    obj: Obj,
+    id: u64,
+    closure: *ObjClosure,
+    status: ProcessStatus,
+    result: Value,
+    error_msg: ?[]const u8,
+
+    // Mailbox for message passing
+    mailbox: std.ArrayList(Value),
+
+    // Process linking
+    links: std.ArrayList(u64),
+    trap_exit: bool,
+
+    // Supervision
+    supervisor_id: ?u64,
+    restart_policy: RestartPolicy,
+    max_restarts: u8,
+    restarts_remaining: u8,
+
+    // Executor — process has its own VM execution context
+    // (registers, frames, etc. live in the scheduler)
+
+    allocator: std.mem.Allocator,
+
+    // Saved spawn arguments for supervision restart
+    spawn_args: std.ArrayList(Value),
+
+    pub fn init(allocator: std.mem.Allocator, id: u64, closure: *ObjClosure) ObjProcess {
+        return .{
+            .obj = .{ .obj_type = .process, .next = null },
+            .id = id,
+            .closure = closure,
+            .status = .ready,
+            .result = .nil,
+            .error_msg = null,
+            .mailbox = .{ .items = &.{}, .capacity = 0 },
+            .links = .{ .items = &.{}, .capacity = 0 },
+            .spawn_args = .{ .items = &.{}, .capacity = 0 },
+            .trap_exit = false,
+            .supervisor_id = null,
+            .restart_policy = .permanent,
+            .max_restarts = 3,
+            .restarts_remaining = 3,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ObjProcess) void {
+        self.mailbox.deinit(self.allocator);
+        self.links.deinit(self.allocator);
+        self.spawn_args.deinit(self.allocator);
     }
 };
 
